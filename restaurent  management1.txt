@@ -1,0 +1,268 @@
+#include<LPC21XX.H>
+#define LCD_DATA  (0xFF<<16)
+#define LCD_RS    (1<<8)
+#define LCD_E     (1<<9)
+#define ROWS      (0xF<<10)
+void delay_ms(unsigned int ms);
+void lcd_cmd(unsigned char c);
+void lcd_data(unsigned char d);
+void lcd_init(void);
+void lcd_clear(void);
+void lcd_print(unsigned char line, const char *s);
+void uart_init(void);
+void uart_tx(char c);
+void uart_str(const char *s);
+char get_key(void);
+char wait_key(void);
+const char keymap[4][4] = {
+    {'1','2','3','A'},
+    {'4','5','6','B'},
+    {'7','8','9','C'},
+    {'*','0','#','D'}
+};
+const char *item[4] = {"Dosa","Idli","Meal","Tea"};
+void delay_ms(unsigned int ms)
+{
+    T0PR  = 15000-1;
+    T0TCR = 0x01;
+    while(T0TC < ms);
+    T0TCR = 0x03;
+    T0TCR = 0x00;
+}
+void lcd_cmd(unsigned char c)
+{
+    IOCLR0 = LCD_DATA;
+    IOSET0 = ((unsigned int)c << 16);
+    IOCLR0 = LCD_RS;
+    IOSET0 = LCD_E;
+    delay_ms(2);
+    IOCLR0 = LCD_E;
+}
+void lcd_data(unsigned char d)
+{
+    IOCLR0 = LCD_DATA;
+    IOSET0 = ((unsigned int)d << 16);
+    IOSET0 = LCD_RS;
+    IOSET0 = LCD_E;
+    delay_ms(2);
+    IOCLR0 = LCD_E;
+}
+
+void lcd_init(void)
+{
+    lcd_cmd(0x38);      
+    lcd_cmd(0x0C);      
+    lcd_cmd(0x06);      
+    lcd_cmd(0x01);     
+}
+void lcd_clear(void)
+{
+    lcd_cmd(0x01);
+}
+void lcd_print(unsigned char line, const char *s)
+{
+    lcd_cmd(line == 0 ? 0x80 : 0xC0);
+    while(*s)
+        lcd_data(*s++);
+}
+void uart_init(void)
+{
+    PINSEL0 = (PINSEL0 & ~0x0F) | 0x05;   
+    U0LCR = 0x83;                          
+    U0DLL = 98;                            
+    U0DLM = 0;
+    U0LCR = 0x03;                         
+}
+
+void uart_tx(char c)
+{
+    while(!(U0LSR & 0x20));                
+    U0THR = c;
+}
+
+void uart_str(const char *s)
+{
+    while(*s)
+        uart_tx(*s++);
+}
+
+// Keypad 
+
+char get_key(void)
+{
+    unsigned char r, c, col;
+    for(r = 0; r < 4; r++)
+    {
+        IOSET0 = ROWS;                     
+        IOCLR0 = (1 << (10 + r));          
+        delay_ms(1);                       
+
+        col = (IOPIN0 >> 4) & 0x0F;        
+        if(col != 0x0F)                    
+        {
+            for(c = 0; c < 4; c++)
+            {
+                if(!(col & (1 << c)))
+                {
+                    delay_ms(20);          
+                    while((((IOPIN0 >> 4) & 0x0F)) != 0x0F);  
+                    IOSET0 = ROWS;
+                    return keymap[r][c];
+                }
+            }
+        }
+    }
+    IOSET0 = ROWS;
+    return 0;
+}
+
+char wait_key(void)
+{
+    char k;
+    while((k = get_key()) == 0);
+    return k;
+}
+int main()
+{
+    unsigned char qty[4];
+    unsigned char i, total, ready;
+    char key, table;
+    char buf[2];
+
+    IODIR0 = LCD_DATA | LCD_RS | LCD_E | ROWS;   
+    IOSET0 = ROWS;
+
+    lcd_init();
+    uart_init();
+
+    
+    lcd_print(0, "Restaurant");
+    lcd_print(1, "Management");
+    uart_str("Restaurant Management\r\n");
+    delay_ms(2000);
+
+    while(1)
+    {
+        
+        lcd_clear();
+        lcd_print(0, "Select Table");
+        lcd_print(1, "Press 1 - 9");
+
+        do {
+            key = wait_key();
+        } while(key < '1' || key > '9');
+        table = key;
+
+        lcd_clear();
+        lcd_print(0, "Table ");
+        lcd_data(table);
+        lcd_print(1, "selected");
+
+        uart_str("Table ");
+        uart_tx(table);
+        uart_str(" selected\r\n");
+        delay_ms(1500);
+
+        
+        for(i = 0; i < 4; i++) qty[i] = 0;
+        total = 0;
+
+        while(1)
+        {
+            lcd_clear();
+            lcd_print(0, "1:Dosa 2:Idli");
+            lcd_print(1, "3:Meal 4:Tea #OK");
+
+            key = wait_key();
+
+            if(key >= '1' && key <= '4')
+            {
+                i = key - '1';
+                if(qty[i] < 9)
+                {
+                    qty[i]++;
+                    total++;
+                }
+                lcd_clear();
+                lcd_print(0, "Added: ");
+                {
+                    const char *p = item[i];
+                    while(*p) lcd_data(*p++);   
+                }
+                lcd_print(1, "Qty: ");
+                lcd_data('0' + qty[i]);
+                delay_ms(1000);
+            }
+            else if(key == '*')            
+            {
+                for(i = 0; i < 4; i++) qty[i] = 0;
+                total = 0;
+                lcd_clear();
+                lcd_print(0, "Order cleared");
+                delay_ms(1000);
+            }
+            else if(key == '#')            
+            {
+                if(total == 0)
+                {
+                    lcd_clear();
+                    lcd_print(0, "No items!");
+                    delay_ms(1000);
+                }
+                else
+                    break;
+            }
+        }
+
+        
+        lcd_clear();
+        lcd_print(0, "Table ");
+        lcd_data(table);
+        lcd_print(1, "Order sent");
+
+        uart_str("ORDER Table ");
+        uart_tx(table);
+        uart_str(": ");
+        for(i = 0; i < 4; i++)
+        {
+            if(qty[i] > 0)
+            {
+                uart_str(item[i]);
+                uart_str(" x");
+                uart_tx('0' + qty[i]);
+                uart_str("  ");
+            }
+        }
+        uart_str("\r\n");
+        delay_ms(1500);
+        lcd_clear();
+        lcd_print(0, "Waiting chef...");
+        lcd_print(1, "Table ");
+        lcd_data(table);
+
+        ready = 0;
+        while(!ready)
+        {
+            if(U0LSR & 0x01)               
+            {
+                buf[0] = U0RBR;
+                if(buf[0] == 'r' || buf[0] == 'R')
+                {
+                    ready = 1;
+                    delay_ms(100);         
+                    while(U0LSR & 0x01)
+                        buf[1] = U0RBR;
+                }
+            }
+        }
+
+        lcd_clear();
+        lcd_print(0, "Table ");
+        lcd_data(table);
+        lcd_print(1, "Order is READY!");
+        uart_str("Order READY for Table ");
+        uart_tx(table);
+        uart_str("\r\n");
+        delay_ms(3000);
+    }
+}
